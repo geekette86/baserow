@@ -90,6 +90,9 @@ image:
 ##
 workingDir: /baserow-saas
 
+## @param command Override the container entrypoint, uses the image's own entrypoint when empty
+##
+command: []
 ## @param args Application container extra arguments
 ##
 args: []
@@ -173,6 +176,17 @@ strategy: {}
 ## @param terminationGracePeriodSeconds Seconds the pod is given to shut down gracefully, uses the Kubernetes default when empty
 ##
 terminationGracePeriodSeconds: ""
+## @param lifecycle Lifecycle hooks of the application container, such as preStop or postStart
+## ref: https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/
+## A preStop hook runs before the container gets SIGTERM, and its duration counts towards
+## terminationGracePeriodSeconds.
+## Example:
+## lifecycle:
+##   preStop:
+##     exec:
+##       command: ["sleep", "10"]
+##
+lifecycle: {}
 
 ## @param resources Set container requests and limits for different resources like CPU or memory (essential for production workloads)
 ## Example:
@@ -186,6 +200,29 @@ terminationGracePeriodSeconds: ""
 ##
 resources: {}
 
+## Configure the startup probe of the application container
+## ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#configure-probes
+## The liveness and readiness probes only start once the startup probe has succeeded.
+## @param startupProbe.enabled Enable startupProbe on the application container
+## @param startupProbe.initialDelaySeconds Initial delay seconds for startupProbe
+## @param startupProbe.periodSeconds Period seconds for startupProbe
+## @param startupProbe.timeoutSeconds Timeout seconds for startupProbe
+## @param startupProbe.failureThreshold Failure threshold for startupProbe
+## @param startupProbe.successThreshold Success threshold for startupProbe
+## @param startupProbe.exec.command Command run in the container to check if it has started.
+##
+startupProbe:
+  enabled: false
+  exec:
+    command:
+      - /bin/bash
+      - -c
+      - /baserow/backend/docker/docker-entrypoint.sh backend-healthcheck
+  failureThreshold: 30
+  initialDelaySeconds: 0
+  periodSeconds: 10
+  successThreshold: 1
+  timeoutSeconds: 5
 ## Configure extra options for Application containers' liveness, readiness and startup probes
 ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#configure-probes
 ## @param readinessProbe.enabled Enable readinessProbe on the application container
@@ -250,6 +287,17 @@ nodeSelector: {}
 ## ref: https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
 ##
 tolerations: []
+## @param topologySpreadConstraints Topology spread constraints for application pods assignment
+## ref: https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/
+##
+topologySpreadConstraints: []
+## @param initContainers Extra init containers that run before the application container starts
+## ref: https://kubernetes.io/docs/concepts/workloads/pods/init-containers/
+##
+initContainers: []
+## @param extraContainers Extra sidecar containers that run next to the application container
+##
+extraContainers: []
 
 ## @param extraEnv Extra environment variables to add to the baserow application container
 ## see: https://baserow.io/docs/installation%2Fconfiguration#environment-variables

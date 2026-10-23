@@ -153,6 +153,10 @@ backendConfigMap:
 
 ## @param migration.enabled Enabled the migration job
 ## @param migration.image.repository Migration job Docker image repository
+## @param migration.image.pullPolicy Migration job image pull policy
+## @param migration.backoffLimit Number of retries before the migration job is marked as failed, uses the Kubernetes default when empty
+## @param migration.activeDeadlineSeconds Maximum seconds the migration job may run before it is stopped, unlimited when empty
+## @param migration.ttlSecondsAfterFinished Seconds after which a finished migration job is deleted, kept until the next upgrade when empty
 ## @param migration.priorityClassName Kubernetes priority class name for the migration job
 ## @param migration.nodeSelector Node labels for pod assignment
 ## @param migration.tolerations Tolerations for pod assignment
@@ -192,10 +196,14 @@ migration:
   enabled: true
   image:
     repository: backend
+    pullPolicy: Always
+  backoffLimit: ""
+  activeDeadlineSeconds: ""
+  ttlSecondsAfterFinished: ""
   priorityClassName: ""
   nodeSelector: {}
   tolerations: []
-  affinity: []
+  affinity: {}
   extraEnv: []
   envFrom: []
   volumes: []
@@ -220,6 +228,75 @@ migration:
       drop: []
     seccompProfile:
       type: ""
+  resources: {}
+
+## @section Backup and restore Configuration
+## Jobs that use the backup and restore commands of the backend image. Backups are
+## written to, and restored from, backup.persistence.existingClaim or the custom
+## backup.volumes. The database settings come from the backend ConfigMap and Secret,
+## and the commands don't support DATABASE_URL, set DATABASE_{HOST,PORT,NAME,USER,PASSWORD}
+## instead when using an external database.
+##
+## The before upgrade backup runs as a pre-upgrade hook, before the migration job.
+## Baserow keeps running while it runs, so changes made during the backup might be
+## missing from it, and users might see errors when deleting tables or editing fields.
+##
+## The restore runs once as a post-install hook, before the migration job, so it only
+## runs when installing a new release. It must restore into a blank database. The
+## migration job then upgrades the restored database to the installed Baserow version.
+## Disable it again after the install so a later reinstall doesn't restore again.
+##
+## @param backup.image.repository Backup and restore jobs Docker image repository
+## @param backup.image.pullPolicy Backup and restore jobs image pull policy
+## @param backup.persistence.existingClaim Existing PersistentVolumeClaim where the backups are stored
+## @param backup.persistence.mountPath Path where the backups volume is mounted, and the directory backups are written to
+## @param backup.beforeUpgrade.enabled Back up the database before every helm upgrade
+## @param backup.beforeUpgrade.args Extra arguments passed to the backup command, e.g. ["--jobs", "4"]
+## @param backup.restore.enabled Restore the database from a backup when installing the release
+## @param backup.restore.file Backup file to restore, relative to backup.persistence.mountPath or absolute
+## @param backup.restore.args Extra arguments passed to the restore command, e.g. ["--jobs", "4"]
+## @param backup.backoffLimit Number of retries before a backup or restore job is marked as failed
+## @param backup.activeDeadlineSeconds Maximum seconds a backup or restore job may run before it is stopped, unlimited when empty
+## @param backup.ttlSecondsAfterFinished Seconds after which a finished backup or restore job is deleted, kept until the next run when empty
+## @param backup.priorityClassName Kubernetes priority class name for the backup and restore jobs
+## @param backup.nodeSelector Node labels for pod assignment
+## @param backup.tolerations Tolerations for pod assignment
+## @param backup.affinity Affinity settings for pod assignment
+## @param backup.extraEnv Extra environment variables for the backup and restore jobs
+## @param backup.envFrom ConfigMaps or Secrets to be used as environment variables
+## @param backup.volumes Extra volumes for the backup and restore jobs, can replace backup.persistence.existingClaim
+## @param backup.volumeMounts Extra volume mounts for the backup and restore jobs
+## @param backup.securityContext Pod security context, uses global.baserow.securityContext when empty
+## @param backup.containerSecurityContext Container security context, uses global.baserow.containerSecurityContext when empty
+## @param backup.resources Set container requests and limits for the backup and restore jobs
+##
+backup:
+  image:
+    repository: backend
+    pullPolicy: IfNotPresent
+  persistence:
+    existingClaim: ""
+    mountPath: /baserow/backups
+  beforeUpgrade:
+    enabled: false
+    args: []
+  restore:
+    enabled: false
+    file: ""
+    args: []
+  backoffLimit: 0
+  activeDeadlineSeconds: ""
+  ttlSecondsAfterFinished: ""
+  priorityClassName: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+  envFrom: []
+  volumes: []
+  volumeMounts: []
+  securityContext: {}
+  containerSecurityContext: {}
   resources: {}
 
 ## @section Baserow inbound email receiver configuration
@@ -331,6 +408,7 @@ baserow-email-receiver:
 ## ASGI Server Arguments
 ## @param baserow-backend-asgi.args Arguments passed to the ASGI server.
 ## This typically includes the command to start the server, such as "gunicorn" for a Gunicorn-based ASGI server.
+## @param baserow-backend-asgi.lifecycle.preStop.exec.command Command run before the container is stopped, waits until it no longer receives traffic.
 
 ## Liveness Probe Configuration
 ## Ensures the ASGI server is alive and can handle requests. If the liveness probe fails, Kubernetes restarts the container.
@@ -362,6 +440,12 @@ baserow-backend-asgi:
     repository: backend
   args:
     - "gunicorn"
+  lifecycle:
+    # Keeps serving while the pod is removed from the Service endpoints and the
+    # ingress, so in-flight and new requests are not dropped during rollouts.
+    preStop:
+      exec:
+        command: ["sleep", "10"]
   livenessProbe:
     exec:
       command:
@@ -405,6 +489,7 @@ baserow-backend-asgi:
 ## WSGI Server Arguments
 ## @param baserow-backend-wsgi.args Arguments passed to the WSGI server.
 ## This typically includes the command to start the server, such as "gunicorn" for a Gunicorn-based WSGI server.
+## @param baserow-backend-wsgi.lifecycle.preStop.exec.command Command run before the container is stopped, waits until it no longer receives traffic.
 
 ## Liveness Probe Configuration
 ## Ensures the WSGI server is alive and can handle requests. If the liveness probe fails, Kubernetes restarts the container.
@@ -439,6 +524,12 @@ baserow-backend-wsgi:
     - gunicorn-wsgi
     - "--timeout"
     - "120"
+  lifecycle:
+    # Keeps serving while the pod is removed from the Service endpoints and the
+    # ingress, so in-flight and new requests are not dropped during rollouts.
+    preStop:
+      exec:
+        command: ["sleep", "10"]
   livenessProbe:
     exec:
       command:
@@ -481,6 +572,7 @@ baserow-backend-wsgi:
 ## Web Frontend Server Arguments
 ## @param baserow-frontend.args Arguments passed to the Web Frontend server.
 ## This typically includes the command to start the server, such as "nuxt".
+## @param baserow-frontend.lifecycle.preStop.exec.command Command run before the container is stopped, waits until it no longer receives traffic.
 
 ## Web Frontend Server Working Directory
 ## @param baserow-frontend.workingDir Working Directory for the container.
@@ -533,6 +625,12 @@ baserow-frontend:
     frontend: true
   service:
     targetPort: 3000
+  lifecycle:
+    # Keeps serving while the pod is removed from the Service endpoints and the
+    # ingress, so in-flight and new requests are not dropped during rollouts.
+    preStop:
+      exec:
+        command: ["sleep", "10"]
 
   readinessProbe:
     failureThreshold: 3

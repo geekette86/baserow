@@ -262,6 +262,68 @@ caddy:
 ```
 
 
+## Graceful shutdown and lifecycle hooks
+
+Every component accepts `lifecycle`, `startupProbe`, `initContainers`,
+`extraContainers`, `command`, `topologySpreadConstraints` and
+`terminationGracePeriodSeconds`, for example:
+
+```yaml
+baserow-backend-wsgi:
+  terminationGracePeriodSeconds: 60
+  lifecycle:
+    preStop:
+      exec:
+        command: ["sleep", "15"]
+  startupProbe:
+    enabled: true
+```
+
+The backend ASGI, backend WSGI and frontend components get a `preStop` hook that
+sleeps for 10 seconds by default. Kubernetes sends SIGTERM to a pod at the same time
+as it removes it from the Service endpoints and the ingress, so without the delay a
+few requests can still be routed to a pod that has stopped accepting them. The
+sleep counts towards `terminationGracePeriodSeconds` (30 seconds by default), so
+raise it when increasing the sleep. Values are merged with these defaults, so set
+`exec: null` when replacing the hook with another handler such as `httpGet`, or set
+`lifecycle: null` to remove it.
+
+## Backup and restore
+
+The chart can run the `backup` and `restore` commands of the backend image as Helm
+hooks. Both store the backups in an existing PersistentVolumeClaim, and need the
+`DATABASE_{HOST,PORT,NAME,USER,PASSWORD}` settings, `DATABASE_URL` is not supported.
+
+Back up the database before every `helm upgrade`, before the migration job runs:
+
+```yaml
+backup:
+  persistence:
+    existingClaim: baserow-backups
+  beforeUpgrade:
+    enabled: true
+```
+
+Baserow keeps running during the backup, so changes made while it runs might be
+missing from it. For a consistent backup, scale the Baserow deployments down first
+or back up a copy of the database.
+
+Restore a backup when installing a new release into a blank database. The restore
+runs before the migration job, which then upgrades the database to the installed
+Baserow version:
+
+```yaml
+backup:
+  persistence:
+    existingClaim: baserow-backups
+  restore:
+    enabled: true
+    file: baserow_backup_before_upgrade_rev3_2026-01-01_10-00-00.tar.gz
+```
+
+The restore only runs on `helm install`. Disable it again afterwards so a later
+reinstall of the release doesn't restore the same backup again.
+
 ## Parameters
 
 ### Global parameters
@@ -343,10 +405,14 @@ caddy:
 | ------------------------------------------------------------- | --------------------------------------------------------- | --------- |
 | `migration.enabled`                                           | Enabled the migration job                                 | `true`    |
 | `migration.image.repository`                                  | Migration job Docker image repository                     | `backend` |
+| `migration.image.pullPolicy` | Migration job image pull policy | `Always` |
+| `migration.backoffLimit` | Number of retries before the migration job is marked as failed, uses the Kubernetes default when empty | `""` |
+| `migration.activeDeadlineSeconds` | Maximum seconds the migration job may run before it is stopped, unlimited when empty | `""` |
+| `migration.ttlSecondsAfterFinished` | Seconds after which a finished migration job is deleted, kept until the next upgrade when empty | `""` |
 | `migration.priorityClassName`                                 | Kubernetes priority class name for the migration job      | `""`      |
 | `migration.nodeSelector`                                      | Node labels for pod assignment                            | `{}`      |
 | `migration.tolerations`                                       | Tolerations for pod assignment                            | `[]`      |
-| `migration.affinity`                                          | Affinity settings for pod assignment                      | `[]`      |
+| `migration.affinity` | Affinity settings for pod assignment | `{}` |
 | `migration.extraEnv`                                          | Extra environment variables for the migration job         | `[]`      |
 | `migration.envFrom`                                           | ConfigMaps or Secrets to be used as environment variables | `[]`      |
 | `migration.volumes`                                           | Volumes for the migration job                             | `[]`      |
@@ -368,6 +434,34 @@ caddy:
 | `migration.containerSecurityContext.capabilities.add`         | List of capabilities to be added                          | `[]`      |
 | `migration.containerSecurityContext.seccompProfile.type`      | Set container's Security Context seccomp profile          | `""`      |
 | `migration.resources`                                         | Set container requests and limits for different resources like CPU or memory (essential for production workloads) | `{}` |
+
+### Backup and restore Configuration
+
+| Name | Description | Value |
+| ---- | ----------- | ----- |
+| `backup.image.repository` | Backup and restore jobs Docker image repository | `backend` |
+| `backup.image.pullPolicy` | Backup and restore jobs image pull policy | `IfNotPresent` |
+| `backup.persistence.existingClaim` | Existing PersistentVolumeClaim where the backups are stored | `""` |
+| `backup.persistence.mountPath` | Path where the backups volume is mounted, and the directory backups are written to | `/baserow/backups` |
+| `backup.beforeUpgrade.enabled` | Back up the database before every helm upgrade | `false` |
+| `backup.beforeUpgrade.args` | Extra arguments passed to the backup command, e.g. ["--jobs", "4"] | `[]` |
+| `backup.restore.enabled` | Restore the database from a backup when installing the release | `false` |
+| `backup.restore.file` | Backup file to restore, relative to backup.persistence.mountPath or absolute | `""` |
+| `backup.restore.args` | Extra arguments passed to the restore command, e.g. ["--jobs", "4"] | `[]` |
+| `backup.backoffLimit` | Number of retries before a backup or restore job is marked as failed | `0` |
+| `backup.activeDeadlineSeconds` | Maximum seconds a backup or restore job may run before it is stopped, unlimited when empty | `""` |
+| `backup.ttlSecondsAfterFinished` | Seconds after which a finished backup or restore job is deleted, kept until the next run when empty | `""` |
+| `backup.priorityClassName` | Kubernetes priority class name for the backup and restore jobs | `""` |
+| `backup.nodeSelector` | Node labels for pod assignment | `{}` |
+| `backup.tolerations` | Tolerations for pod assignment | `[]` |
+| `backup.affinity` | Affinity settings for pod assignment | `{}` |
+| `backup.extraEnv` | Extra environment variables for the backup and restore jobs | `[]` |
+| `backup.envFrom` | ConfigMaps or Secrets to be used as environment variables | `[]` |
+| `backup.volumes` | Extra volumes for the backup and restore jobs, can replace backup.persistence.existingClaim | `[]` |
+| `backup.volumeMounts` | Extra volume mounts for the backup and restore jobs | `[]` |
+| `backup.securityContext` | Pod security context, uses global.baserow.securityContext when empty | `{}` |
+| `backup.containerSecurityContext` | Container security context, uses global.baserow.containerSecurityContext when empty | `{}` |
+| `backup.resources` | Set container requests and limits for the backup and restore jobs | `{}` |
 
 ### Baserow Inbound Email Receiver Configuration
 
@@ -391,6 +485,7 @@ caddy:
 | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `baserow-backend-asgi.image.repository`                              | Docker image repository for the ASGI server.                                                 | `backend`                                                                               |
 | `baserow-backend-asgi.args`                                          | Arguments passed to the ASGI server.                                                         | `["gunicorn"]`                                                                          |
+| `baserow-backend-asgi.lifecycle.preStop.exec.command` | Command run before the container is stopped, waits until it no longer receives traffic. | `["sleep","10"]` |
 | `baserow-backend-asgi.livenessProbe.exec.command`                    | The command used to check the liveness of the ASGI server.                                   | `["/bin/bash","-c","/baserow/backend/docker/docker-entrypoint.sh backend-healthcheck"]` |
 | `baserow-backend-asgi.livenessProbe.failureThreshold`                | Number of times the probe can fail before the container is restarted.                        | `3`                                                                                     |
 | `baserow-backend-asgi.livenessProbe.initialDelaySeconds`             | Delay before the liveness probe is initiated after the container starts.                     | `120`                                                                                   |
@@ -415,6 +510,7 @@ caddy:
 | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `baserow-backend-wsgi.image.repository`                              | Docker image repository for the WSGI server.                                                 | `backend`                                                                               |
 | `baserow-backend-wsgi.args`                                          | Arguments passed to the WSGI server.                                                         | `["gunicorn-wsgi","--timeout","120"]`                                                   |
+| `baserow-backend-wsgi.lifecycle.preStop.exec.command` | Command run before the container is stopped, waits until it no longer receives traffic. | `["sleep","10"]` |
 | `baserow-backend-wsgi.livenessProbe.exec.command`                    | The command used to check the liveness of the WSGI server.                                   | `["/bin/bash","-c","/baserow/backend/docker/docker-entrypoint.sh backend-healthcheck"]` |
 | `baserow-backend-wsgi.livenessProbe.failureThreshold`                | Number of times the probe can fail before the container is restarted.                        | `3`                                                                                     |
 | `baserow-backend-wsgi.livenessProbe.initialDelaySeconds`             | Delay before the liveness probe is initiated after the container starts.                     | `120`                                                                                   |
@@ -439,6 +535,7 @@ caddy:
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | -------------- |
 | `baserow-frontend.image.repository`                              | Docker image repository for the Web Frontend server.                                         | `web-frontend` |
 | `baserow-frontend.args`                                          | Arguments passed to the Web Frontend server.                                                 | `["nuxt"]`     |
+| `baserow-frontend.lifecycle.preStop.exec.command` | Command run before the container is stopped, waits until it no longer receives traffic. | `["sleep","10"]` |
 | `baserow-frontend.workingDir`                                    | Working Directory for the container.                                                         | `""`           |
 | `baserow-frontend.livenessProbe.httpGet.path`                    | The path to check for the liveness probe.                                                    | `/_health`     |
 | `baserow-frontend.livenessProbe.httpGet.port`                    | The port to check for the liveness probe.                                                    | `3000`         |

@@ -1,0 +1,8 @@
+{{- if .Values.backup.restore.enabled }}
+{{- $file := required "backup.restore.file must be set to the backup file to restore" .Values.backup.restore.file }}
+{{- if not (hasPrefix "/" $file) }}
+{{- $file = printf "%s/%s" (trimSuffix "/" .Values.backup.persistence.mountPath) $file }}
+{{- end }}
+{{- $args := concat (list "restore" "-f" $file) .Values.backup.restore.args }}
+{{- include "baserow.global.backup.job" (dict "root" . "name" "restore" "hook" "post-install" "weight" "-5" "args" $args) }}
+{{- end }}

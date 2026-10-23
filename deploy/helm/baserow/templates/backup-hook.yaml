@@ -1,0 +1,6 @@
+{{- if .Values.backup.beforeUpgrade.enabled }}
+{{- $name := printf "baserow_backup_before_upgrade_rev%d_%s.tar.gz" (int .Release.Revision) (dateInZone "2006-01-02_15-04-05" now "UTC") }}
+{{- $file := printf "%s/%s" (trimSuffix "/" .Values.backup.persistence.mountPath) $name }}
+{{- $args := concat (list "backup" "-f" $file) .Values.backup.beforeUpgrade.args }}
+{{- include "baserow.global.backup.job" (dict "root" . "name" "backup" "hook" "pre-upgrade" "weight" "-5" "args" $args) }}
+{{- end }}

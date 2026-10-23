@@ -191,3 +191,153 @@ ContainerSecurityContext combine the global and local ContainerSecurityContexts
 {{- omit .Values.global.baserow.containerSecurityContext "enabled" | toYaml }}
 {{- end }}
 {{- end }}
+
+{{/*
+Image used by the backup and restore jobs.
+*/}}
+{{- define "baserow.global.backup.image" -}}
+{{- if and .Values.global.baserow.imageRegistry .Values.global.baserow.image.tag -}}
+{{- printf "%s/%s:%s" .Values.global.baserow.imageRegistry .Values.backup.image.repository .Values.global.baserow.image.tag }}
+{{- else -}}
+{{- printf "%s:%s" .Values.backup.image.repository .Chart.AppVersion }}
+{{- end }}
+{{- end }}
+
+{{/*
+Environment of the backup and restore jobs, they need the same database settings as
+the backend.
+*/}}
+{{- define "baserow.global.backup.envFrom" -}}
+- configMapRef:
+    name: {{ .Values.global.baserow.sharedConfigMap }}
+- configMapRef:
+    name: {{ .Values.global.baserow.backendConfigMap }}
+- secretRef:
+    name: {{ .Values.global.baserow.backendSecret }}
+{{- if .Values.global.baserow.envFrom }}
+{{ toYaml .Values.global.baserow.envFrom }}
+{{- end }}
+{{- if .Values.backup.envFrom }}
+{{ toYaml .Values.backup.envFrom }}
+{{- end }}
+{{- end }}
+
+{{/*
+Renders a Helm hook Job that runs a database command of the backend image (backup or
+restore) with the backup volume mounted at backup.persistence.mountPath.
+
+Expects a dict with:
+- root: the root context
+- name: suffix of the job name and name of the container
+- hook: the helm.sh/hook annotation value
+- weight: the helm.sh/hook-weight annotation value
+- args: the container arguments
+*/}}
+{{- define "baserow.global.backup.job" -}}
+{{- $root := .root -}}
+{{- $values := $root.Values.backup -}}
+{{- if not (or $values.persistence.existingClaim $values.volumes) -}}
+{{- fail "backup.persistence.existingClaim or backup.volumes must be set to store the backups outside of the job's pod" -}}
+{{- end -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "baserow.global.fullname" $root }}-{{ .name }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- include "baserow.global.labels" $root | nindent 4 }}
+  annotations:
+    helm.sh/hook: {{ .hook }}
+    helm.sh/hook-weight: {{ .weight | quote }}
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: {{ $values.backoffLimit | default 0 }}
+  {{- with $values.activeDeadlineSeconds }}
+  activeDeadlineSeconds: {{ . }}
+  {{- end }}
+  {{- with $values.ttlSecondsAfterFinished }}
+  ttlSecondsAfterFinished: {{ . }}
+  {{- end }}
+  template:
+    spec:
+      restartPolicy: Never
+      {{- with $root.Values.global.baserow.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- if $values.securityContext }}
+      securityContext: {{- toYaml $values.securityContext | nindent 8 }}
+      {{- else if $root.Values.global.baserow.securityContext.enabled }}
+      securityContext: {{- omit $root.Values.global.baserow.securityContext "enabled" | toYaml | nindent 8 }}
+      {{- end }}
+      initContainers:
+        # The backup and restore commands do not retry, so wait until PostgreSQL
+        # accepts connections first.
+        - name: wait-for-db
+          image: {{ include "baserow.global.backup.image" $root }}
+          imagePullPolicy: {{ $values.image.pullPolicy }}
+          args: ["wait_for_db"]
+          envFrom: {{- include "baserow.global.backup.envFrom" $root | nindent 12 }}
+          {{- with $values.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if $values.containerSecurityContext }}
+          securityContext: {{- toYaml $values.containerSecurityContext | nindent 12 }}
+          {{- else if $root.Values.global.baserow.containerSecurityContext.enabled }}
+          securityContext: {{- omit $root.Values.global.baserow.containerSecurityContext "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+      containers:
+        - name: {{ .name }}
+          image: {{ include "baserow.global.backup.image" $root }}
+          imagePullPolicy: {{ $values.image.pullPolicy }}
+          workingDir: {{ $values.persistence.mountPath }}
+          args:
+            {{- toYaml .args | nindent 12 }}
+          envFrom: {{- include "baserow.global.backup.envFrom" $root | nindent 12 }}
+          {{- with $values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $values.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if $values.containerSecurityContext }}
+          securityContext: {{- toYaml $values.containerSecurityContext | nindent 12 }}
+          {{- else if $root.Values.global.baserow.containerSecurityContext.enabled }}
+          securityContext: {{- omit $root.Values.global.baserow.containerSecurityContext "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- if $values.persistence.existingClaim }}
+            - name: backups
+              mountPath: {{ $values.persistence.mountPath }}
+            {{- end }}
+            {{- with $values.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      {{- if or $values.persistence.existingClaim $values.volumes }}
+      volumes:
+        {{- if $values.persistence.existingClaim }}
+        - name: backups
+          persistentVolumeClaim:
+            claimName: {{ $values.persistence.existingClaim }}
+        {{- end }}
+        {{- with $values.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      {{- with $values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

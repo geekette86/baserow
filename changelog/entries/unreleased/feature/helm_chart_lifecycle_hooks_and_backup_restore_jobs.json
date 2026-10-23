@@ -1,0 +1,13 @@
+{
+    "type": "feature",
+    "message": "Support lifecycle hooks, startup probes, init and sidecar containers, and backup and restore jobs in the Helm chart",
+    "issue_origin": "github",
+    "issue_number": null,
+    "domain": "core",
+    "bullet_points": [
+        "Backend and frontend pods wait 10 seconds before stopping so rollouts don't drop requests",
+        "Optional backup before every upgrade and restore on install",
+        "The migration job can be given a priority class"
+    ],
+    "created_at": "2026-10-22"
+}
